@@ -542,6 +542,47 @@ const DEFAULT_COMMON = [
 ];
 
 /* ---------- 2. 存储 ---------- */
+// 数据保护：读取异常时保留原始副本并拒绝写入，避免覆盖已有账单
+const DataGuard = (function(){
+  const blocked = {};
+  let bannerShown = false;
+  function rescue(key, raw){
+    try{
+      const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+      localStorage.setItem('__rescue.' + key + '.' + stamp, raw);
+    }catch(e){}
+  }
+  function paint(){
+    if(document.getElementById('__data_guard_banner')) return;
+    const el = document.createElement('div');
+    el.id = '__data_guard_banner';
+    el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;background:#8f1d1d;' +
+      'color:#fff;font:13px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;' +
+      'padding:10px 14px;box-shadow:0 2px 10px rgba(0,0,0,.35)';
+    el.textContent = '数据读取异常：原始数据已另存副本，本次不会写入。请到「数据备份中心」恢复后再使用。';
+    document.body.appendChild(el);
+  }
+  function showBanner(){
+    if(bannerShown) return;
+    bannerShown = true;
+    if(document.body) paint();
+    else document.addEventListener('DOMContentLoaded', paint);
+  }
+  function markBroken(key, raw){
+    rescue(key, raw);
+    blocked[key] = true;
+    showBanner();
+  }
+  function read(key){
+    let raw = null;
+    try{ raw = localStorage.getItem(key); }catch(e){ return { ok:true, raw:null, value:null }; }
+    if(raw === null) return { ok:true, raw:null, value:null };
+    try{ return { ok:true, raw:raw, value:JSON.parse(raw) }; }
+    catch(e){ markBroken(key, raw); return { ok:false, raw:raw, value:null }; }
+  }
+  return { read, markBroken, canWrite: key => !blocked[key] };
+})();
+
 const KEY = 'suishou_jizhang_v1';
 const DATA_VERSION = 2;
 const DEFAULT_DATA = { v:DATA_VERSION, records:[], meta:{ cats:null, common:null, lastCat:null, lastSub:null } };
@@ -618,18 +659,20 @@ function normalizeData(d){
   return d;
 }
 function load(){
+  const read = DataGuard.read(KEY);
+  if(!read.ok || read.value === null) return normalizeData(JSON.parse(JSON.stringify(DEFAULT_DATA)));
   try{
-    const raw = localStorage.getItem(KEY);
-    if(!raw) return normalizeData(JSON.parse(JSON.stringify(DEFAULT_DATA)));
-    const d = JSON.parse(raw);
-    if(!d || typeof d!=='object') return normalizeData(JSON.parse(JSON.stringify(DEFAULT_DATA)));
+    const d = read.value;
+    if(!d || typeof d!=='object' || Array.isArray(d)) throw new Error('结构异常');
     return normalizeData(d);
   }catch(e){
     console.warn('读取数据失败', e);
+    DataGuard.markBroken(KEY, read.raw);
     return normalizeData(JSON.parse(JSON.stringify(DEFAULT_DATA)));
   }
 }
 function save(){
+  if(!DataGuard.canWrite(KEY)) return;
   try{ localStorage.setItem(KEY, JSON.stringify(S)); }
   catch(e){ toast('保存失败：浏览器存储不可用'); }
 }
@@ -1473,5 +1516,6 @@ if(!S.records.length && !localStorage.getItem(KEY+'_seen')){
   setTimeout(()=> toast('点右下角 + 开始记第一笔'), 600);
 }
 </script>
+<script src="https://jasmineooo.github.io/LifeLog/autobackup.js"></script>
 </body>
 </html>
