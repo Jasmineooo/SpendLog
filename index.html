@@ -322,6 +322,25 @@ input,textarea{font-family:inherit;font-size:inherit;color:inherit}
 }
 .toast.on{opacity:1;transform:translate(-50%,0)}
 .hidden{display:none!important}
+/* ---------- AI 分析 ---------- */
+.aibar{display:flex;align-items:center;gap:10px;margin:12px 0 10px}
+.aibtn{flex:1;padding:11px 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font-size:13.5px;font-weight:600;font-family:inherit}
+.aibtn:active{opacity:.75}
+.aibtn[disabled]{opacity:.6}
+.aihint{font-size:11.5px;color:var(--text2);flex:0 0 auto;max-width:46%}
+.aisec{margin:13px 0}
+.aisec h4{margin:0 0 4px;font-size:13px;color:var(--text);font-weight:700}
+.aisec p{margin:3px 0;font-size:13px;line-height:1.75;color:var(--text2)}
+.aisec ul{margin:4px 0 0;padding-left:18px;font-size:13px;line-height:1.75;color:var(--text2)}
+.aiquote{margin-top:12px;padding:10px 12px;border-left:3px solid #8A6D3B;background:var(--card2);border-radius:6px;font-size:12.5px;line-height:1.8;color:var(--text2)}
+.aiinput{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:10px;border:1px solid var(--line);background:var(--card2);color:var(--text);font-size:13px;margin-bottom:8px;font-family:inherit}
+.aibtns{display:flex;gap:8px}
+.aibtns button{flex:1;padding:8px 6px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--text);font-size:12.5px;font-family:inherit}
+.aistatus{font-size:11.5px;color:var(--text2);margin-top:8px;line-height:1.6}
+.aicard{padding:14px 16px 16px}
+.aicard .ah{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:2px}
+.aicard .ah b{font-size:13.5px}
+.aicard .ah span{font-size:11px;color:var(--text2)}
 </style>
 </head>
 <body>
@@ -355,6 +374,11 @@ input,textarea{font-family:inherit;font-size:inherit;color:inherit}
         <button data-scope="month" class="on">按 月</button>
         <button data-scope="year">按 年</button>
       </div>
+      <div class="aibar">
+        <button id="aiSpendBtn" class="aibtn">✨ AI 分析本期</button>
+        <span class="aihint" id="aiSpendHint">找出异常与节省空间</span>
+      </div>
+      <div id="aiSpendCard"></div>
       <div class="card">
         <div class="amountbox" style="padding:16px 18px 6px">
           <div style="flex:1">
@@ -390,6 +414,20 @@ input,textarea{font-family:inherit;font-size:inherit;color:inherit}
           <span class="st"><span class="a">复制数据到剪贴板</span><span class="b">方便粘贴到备忘录保存</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
         </button>
+      </div>
+      <div class="card setgroup" id="setAI">
+        <div class="gh">AI 分析（DeepSeek）</div>
+        <div style="padding:4px 14px 14px">
+          <div class="aihint" style="margin-bottom:8px;max-width:none">与其他应用共用同一个 Key，只存本机，备份时自动脱敏</div>
+          <input class="aiinput" id="spAiKey" type="password" placeholder="API Key（sk-...）" autocomplete="off">
+          <input class="aiinput" id="spAiModel" type="text" placeholder="模型，例如 deepseek-chat">
+          <div class="aibtns">
+            <button id="spAiSave">保存</button>
+            <button id="spAiTest">测试连接</button>
+            <button id="spAiClear">清除</button>
+          </div>
+          <div class="aistatus" id="spAiStatus"></div>
+        </div>
       </div>
       <div class="card setgroup" id="setCommon">
         <div class="gh">常用分类</div>
@@ -824,6 +862,245 @@ function statRange(){
   }
   return { from: statYear+'-01-01', to: statYear+'-12-31', y: statYear, label: statYear+'年' };
 }
+/* ---------- AI 消费分析（DeepSeek，与其他应用共用 Key） ---------- */
+const SpendAI = {
+  KEY: 'ai.settings.v1',
+  DEFAULTS: { baseUrl:'https://api.deepseek.com', model:'deepseek-chat', apiKey:'' },
+  get(){
+    try{
+      const raw = localStorage.getItem(this.KEY);
+      const v = raw ? JSON.parse(raw) : {};
+      return Object.assign({}, this.DEFAULTS, v||{});
+    }catch(e){ return Object.assign({}, this.DEFAULTS); }
+  },
+  save(patch){
+    const next = Object.assign({}, this.get(), patch||{});
+    try{ localStorage.setItem(this.KEY, JSON.stringify(next)); return true; }
+    catch(e){ return false; }
+  },
+  ready(){ const s=this.get(); return !!(s.apiKey && s.baseUrl && s.model); },
+  endpoint(){ return this.get().baseUrl.replace(/\/+$/,'') + '/chat/completions'; },
+  async chatStream(messages, opts){
+    const cfg = this.get(), o = opts||{};
+    if(!cfg.apiKey) throw new Error('还没有填写 DeepSeek API Key');
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), o.timeout || 180000);
+    let res;
+    try{
+      res = await fetch(this.endpoint(), {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+cfg.apiKey },
+        body: JSON.stringify({
+          model: cfg.model, messages: messages, stream: true,
+          temperature: o.temperature===undefined ? 0.3 : o.temperature,
+          max_tokens: o.maxTokens || 3000
+        }),
+        signal: ctrl.signal
+      });
+    }catch(err){
+      clearTimeout(timer);
+      throw new Error(err.name==='AbortError' ? '请求超时，请稍后重试' : '网络错误：'+err.message);
+    }
+    if(!res.ok){
+      clearTimeout(timer);
+      let detail='';
+      try{ detail = await res.text(); }catch(e){ detail=''; }
+      throw new Error('接口返回 '+res.status+(detail?('：'+detail.slice(0,120)):''));
+    }
+    const reader = res.body.getReader(), decoder = new TextDecoder();
+    let buffer='', text='', finish='', rawAll='';
+    while(true){
+      const chunk = await reader.read();
+      if(chunk.done) break;
+      const decoded = decoder.decode(chunk.value, { stream:true });
+      rawAll += decoded; buffer += decoded;
+      let idx = buffer.indexOf('\n');
+      while(idx>=0){
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx+1);
+        idx = buffer.indexOf('\n');
+        if(!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if(!data || data==='[DONE]') continue;
+        try{
+          const json = JSON.parse(data);
+          const choice = json.choices && json.choices[0];
+          if(choice && choice.finish_reason) finish = choice.finish_reason;
+          const delta = choice && choice.delta;
+          if(delta && delta.content) text += delta.content;
+        }catch(e){ /* 忽略心跳等非 JSON 行 */ }
+      }
+    }
+    clearTimeout(timer);
+    if(!text.trim() && rawAll.trim()){
+      try{
+        const whole = JSON.parse(rawAll);
+        const choice = whole.choices && whole.choices[0];
+        if(choice){
+          if(choice.finish_reason) finish = choice.finish_reason;
+          if(choice.message && typeof choice.message.content==='string') text = choice.message.content;
+        }
+      }catch(e){ /* 不是整体 JSON */ }
+    }
+    if(!text.trim()){
+      if(finish==='length') throw new Error('模型把输出额度用在了思考上，未返回正文。可换用对话型模型，或稍后重试');
+      throw new Error('模型没有返回正文'+(finish?('（finish: '+finish+'）'):'')+'，可稍后重试');
+    }
+    return text.trim();
+  },
+  async ping(){
+    const text = await this.chatStream([
+      { role:'system', content:'这是连通性测试。直接给出结果，不要推理过程。' },
+      { role:'user', content:'只回复两个字：可用' }
+    ], { maxTokens:512, timeout:60000 });
+    return text.slice(0,20);
+  }
+};
+
+function prevSpendRange(rg){
+  if(rg.mk){
+    const p = rg.mk.split('-').map(Number);
+    const d = new Date(p[0], p[1]-2, 1);
+    return { from: monthKey(d)+'-01', to: monthKey(d)+'-31', label: d.getFullYear()+'年'+(d.getMonth()+1)+'月' };
+  }
+  return { from:(rg.y-1)+'-01-01', to:(rg.y-1)+'-12-31', label:(rg.y-1)+'年' };
+}
+function yuan(cents){ const v = (cents||0)/100; return (Math.round(v*10)/10).toFixed(v % 1 ? 1 : 0); }
+
+// 把本期账单压成一段紧凑摘要，控制 token
+function spendDigest(){
+  const rg = statRange();
+  const recs = S.records.filter(r=> r.date>=rg.from && r.date<=rg.to );
+  const total = recs.reduce((s,r)=>s+r.amount,0);
+  const count = recs.length;
+  let days = 365;
+  if(rg.mk){ const p = rg.mk.split('-').map(Number); days = new Date(p[0], p[1], 0).getDate(); }
+  const dayMap = {};
+  recs.forEach(r=>{ dayMap[r.date] = (dayMap[r.date]||0) + r.amount; });
+  const peak = Object.entries(dayMap).sort((a,b)=>b[1]-a[1])[0];
+
+  const pr = prevSpendRange(rg);
+  const prevRecs = S.records.filter(r=> r.date>=pr.from && r.date<=pr.to );
+  const prevTotal = prevRecs.reduce((s,r)=>s+r.amount,0);
+  const prevByCat = {};
+  prevRecs.forEach(r=>{ prevByCat[r.catId] = (prevByCat[r.catId]||0) + r.amount; });
+
+  const byCat = {};
+  recs.forEach(r=>{
+    const k = r.catId;
+    if(!byCat[k]) byCat[k] = { name:r.catName, amount:0, count:0, subs:{} };
+    byCat[k].amount += r.amount;
+    byCat[k].count += 1;
+    const sk = r.subName || r.catName;
+    byCat[k].subs[sk] = (byCat[k].subs[sk]||0) + r.amount;
+  });
+  const cats = Object.entries(byCat).sort((a,b)=> b[1].amount - a[1].amount);
+
+  const lines = [];
+  lines.push(`【周期】${rg.label}，共 ${count} 笔`);
+  lines.push(`【总额】¥${yuan(total)}，日均 ¥${yuan(total/Math.max(days,1))}，笔均 ¥${yuan(count? total/count : 0)}${peak? `；单日最高 ${peak[0]} ¥${yuan(peak[1])}`:''}`);
+  lines.push(`【环比】上期 ${pr.label} ¥${yuan(prevTotal)}，本期${prevTotal? (total>=prevTotal? '增加 ':'减少 ')+Math.abs(Math.round((total-prevTotal)/prevTotal*100))+'%' : '（上期无记录）'}`);
+  const catText = cats.slice(0,6).map(([id,c])=>{
+    const share = total? Math.round(c.amount/total*100) : 0;
+    const prev = prevByCat[id]||0;
+    const delta = prev? `，环比${c.amount>=prev?'+':''}${Math.round((c.amount-prev)/prev*100)}%` : '';
+    const topSub = Object.entries(c.subs).sort((a,b)=>b[1]-a[1])[0];
+    return `- ${c.name} ¥${yuan(c.amount)}（占 ${share}%，${c.count} 笔${delta}，主要子类 ${topSub[0]} ¥${yuan(topSub[1])}）`;
+  }).join('\n');
+  if(catText) lines.push('【分类】\n'+catText);
+  const big = recs.slice().sort((a,b)=>b.amount-a.amount).slice(0,5);
+  if(big.length) lines.push('【大额】\n'+big.map(r=>`- ${r.date} ${r.catName}/${r.subName||''} ¥${yuan(r.amount)}${r.note?('（'+String(r.note).slice(0,20)+'）'):''}`).join('\n'));
+  const small = recs.filter(r=>r.amount<2000);
+  const smallSum = small.reduce((s,r)=>s+r.amount,0);
+  lines.push(`【集中度】前 3 类占 ${total? Math.round(cats.slice(0,3).reduce((s,c)=>s+c[1].amount,0)/total*100):0}%；¥20 以下 ${small.length} 笔共 ¥${yuan(smallSum)}；未写备注 ${recs.filter(r=>!r.note).length} 笔`);
+  return { text: lines.join('\n').slice(0,2400), range: rg, total, count };
+}
+
+async function aiSpendNarrative(input){
+  const system = { role:'system', content:'你是务实的个人财务顾问。只依据账单数据说话，不编造消费；每条判断都要引用具体金额或比例；语言克制，不评判人品，只指出可调整的结构。不输出思考过程。' };
+  const userText = `以下是本期账单摘要：\n${input}\n\n请严格按下面格式输出，总字数 300–450 字，每段都要有数字：\n【结论】2 句话：本期的消费特点，以及最值得警惕的一点。\n【结构】2–3 句：钱主要花在哪几类，集中度如何，与上期相比的变化。\n【异常】2 条，每条以「· 」开头：单笔或单日异常、某类突然上涨、小额高频等，带金额。\n【建议】3 条，每条以「· 」开头，格式为「动作 + 量化目标 + 预计每月可省金额」，要能立刻执行。\n【预算】2 句：给出下期最值得控制的 3 个分类及具体金额上限。`;
+  const plans = [ { maxTokens:3000, extra:'' }, { maxTokens:6000, extra:'\n\n注意：不要输出分析过程或思考内容，直接给出最终结果。' } ];
+  let lastError = null;
+  for(let i=0;i<plans.length;i+=1){
+    try{
+      return await SpendAI.chatStream([
+        system,
+        { role:'user', content: userText + plans[i].extra }
+      ], { maxTokens: plans[i].maxTokens, timeout:180000 });
+    }catch(err){
+      lastError = err;
+      const msg = String((err && err.message)||'');
+      if(!/额度|没有返回|空|截断|length/i.test(msg)) throw err;
+    }
+  }
+  throw lastError || new Error('生成失败，请稍后重试');
+}
+
+function renderSpendAI(text){
+  const chunks = [];
+  let cur = null;
+  const flush = ()=>{
+    if(!cur) return;
+    const items = cur.lines.filter(Boolean);
+    if(!items.length){ cur = null; return; }
+    if(cur.title.indexOf('预算')>=0){
+      chunks.push('<div class="aiquote"><div style="font-size:11.5px;font-weight:700;color:var(--text);margin-bottom:4px">下期预算</div>'+items.map(l=>'<p style="margin:4px 0">'+esc(l)+'</p>').join('')+'</div>');
+      cur = null; return;
+    }
+    const bullets = items.filter(l=>/^[·\-*]\s+/.test(l));
+    const paras = items.filter(l=>!/^[·\-*]\s+/.test(l));
+    let html = '<div class="aisec">';
+    if(cur.title) html += '<h4>'+esc(cur.title)+'</h4>';
+    html += paras.map(l=>'<p>'+esc(l)+'</p>').join('');
+    if(bullets.length) html += '<ul>'+bullets.map(l=>'<li>'+esc(l.replace(/^[·\-*]\s+/,''))+'</li>').join('')+'</ul>';
+    html += '</div>';
+    chunks.push(html);
+    cur = null;
+  };
+  text.split(/\n/).forEach(raw=>{
+    const line = raw.trim();
+    if(!line) return;
+    const m = line.match(/^【(.+?)】\s*(.*)$/);
+    if(m){ flush(); cur = { title:m[1], lines: m[2]?[m[2]]:[] }; return; }
+    if(!cur) cur = { title:'', lines:[] };
+    cur.lines.push(line);
+  });
+  flush();
+  return chunks.join('');
+}
+
+let aiSpendBusy = false;
+async function runSpendAI(){
+  if(aiSpendBusy) return;
+  const card = $('#aiSpendCard'), btn = $('#aiSpendBtn');
+  if(!SpendAI.ready()){
+    card.innerHTML = '<div class="card aicard"><div class="aisec"><p style="color:var(--danger)">还没有配置 DeepSeek API Key，请到「设置 → AI 分析」填写。</p></div></div>';
+    return;
+  }
+  const digest = spendDigest();
+  if(!digest.count){
+    card.innerHTML = '<div class="card aicard"><div class="aisec"><p>这一时段还没有支出记录，先记几笔再来分析。</p></div></div>';
+    return;
+  }
+  aiSpendBusy = true;
+  if(btn) btn.disabled = true;
+  const started = Date.now();
+  card.innerHTML = '<div class="card aicard"><div class="ah"><b>AI 正在分析…</b><span id="aiSpendTimer">0s</span></div><div class="aisec"><p>正在读取本期 '+digest.count+' 笔账单，通常需要 10–60 秒。</p></div></div>';
+  const timer = setInterval(()=>{
+    const el = document.getElementById('aiSpendTimer');
+    if(el) el.textContent = Math.round((Date.now()-started)/1000)+'s';
+  }, 1000);
+  try{
+    const text = await aiSpendNarrative(digest.text);
+    card.innerHTML = '<div class="card aicard"><div class="ah"><b>🧭 AI 消费复盘</b><span>'+esc(digest.range.label)+'</span></div>'+renderSpendAI(text)+'</div>';
+  }catch(err){
+    card.innerHTML = '<div class="card aicard"><div class="aisec"><h4>AI 分析未完成</h4><p style="color:var(--danger)">'+esc(err.message||'生成失败')+'</p><p>可以稍后重试；数据与统计不受影响。</p></div></div>';
+  }
+  clearInterval(timer);
+  aiSpendBusy = false;
+  if(btn) btn.disabled = false;
+}
+
 function renderStat(){
   const rg = statRange();
   $('#statPeriodText').textContent = rg.label;
@@ -1295,6 +1572,10 @@ document.addEventListener('pointercancel', srtEnd);
 function renderSet(){
   $('#exportSub').textContent = '共 ' + S.records.length + ' 条记录';
   renderCommonCard();
+  const aiCfg = SpendAI.get();
+  if($('#spAiKey')) $('#spAiKey').value = aiCfg.apiKey || '';
+  if($('#spAiModel')) $('#spAiModel').value = aiCfg.model || '';
+  if($('#spAiStatus')) $('#spAiStatus').textContent = SpendAI.ready() ? ('已配置：'+aiCfg.model) : '尚未配置 API Key，统计页的 AI 分析不可用';
   const cats = visibleCats();
   let html = '<div class="gh">分类管理 · 共 '+cats.length+' 个一级分类。拖动 ⠿ 排序，点名称改名，点 × 删除</div>';
   cats.forEach((c,idx)=>{
@@ -1507,6 +1788,37 @@ $('#dlgOk').addEventListener('click', ()=>{
 });
 
 /* ---------- 11. 初始化 ---------- */
+$('#aiSpendBtn').addEventListener('click', runSpendAI);
+$('#spAiSave').addEventListener('click', ()=>{
+  const key = ($('#spAiKey').value||'').trim();
+  const model = ($('#spAiModel').value||'').trim() || SpendAI.DEFAULTS.model;
+  if(!SpendAI.save({ apiKey:key, model:model })){ toast('保存失败，存储空间可能不足'); return; }
+  toast('AI 设置已保存');
+  renderSet();
+});
+$('#spAiClear').addEventListener('click', ()=>{
+  if(!confirm('清除本机的 DeepSeek API Key？不影响账单数据。')) return;
+  SpendAI.save({ apiKey:'' });
+  toast('已清除 API Key');
+  renderSet();
+});
+$('#spAiTest').addEventListener('click', async ()=>{
+  const status = $('#spAiStatus'), btn = $('#spAiTest'), label = btn.textContent;
+  const key = ($('#spAiKey').value||'').trim();
+  const model = ($('#spAiModel').value||'').trim() || SpendAI.DEFAULTS.model;
+  if(key) SpendAI.save({ apiKey:key, model:model });
+  btn.disabled = true; btn.textContent = '测试中…';
+  if(status) status.textContent = '正在连接…';
+  try{
+    const reply = await SpendAI.ping();
+    if(status) status.textContent = '连接正常，模型回复：'+reply;
+    toast('连接正常');
+  }catch(err){
+    if(status) status.textContent = '连接失败：'+(err.message||'');
+    toast('连接失败');
+  }
+  btn.disabled = false; btn.textContent = label;
+});
 function renderAll(){ renderList(); renderStat(); if(curTab==='set') renderSet(); }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ if($('#dlg').classList.contains('open')) closeDialog(); else closeSheet(); } });
 switchTab('list');
